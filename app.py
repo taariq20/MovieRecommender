@@ -5,7 +5,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # ── Page config ──────────────────────────────────────────────────
-st.set_page_config(page_title='Movie Recommender', page_icon='🎬', layout='centered')
+st.set_page_config(page_title='Personalization Engine', page_icon='🎬', layout='centered')
 
 # ── Load models & data ───────────────────────────────────────────
 @st.cache_resource
@@ -185,7 +185,7 @@ if 'page'     not in st.session_state: st.session_state.page     = 'landing'
 # ── Pages ────────────────────────────────────────────────────────
 
 def landing_page():
-    st.title('🎬 Movie Recommender')
+    st.title('🎬 Personalization Engine')
     st.write('How do you want to start?')
     col1, col2 = st.columns(2)
     with col1:
