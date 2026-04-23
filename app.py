@@ -181,6 +181,7 @@ if 'variant'  not in st.session_state: st.session_state.variant  = None
 if 'user_type' not in st.session_state: st.session_state.user_type = None
 if 'preferred_genres' not in st.session_state: st.session_state.preferred_genres = []
 if 'page'     not in st.session_state: st.session_state.page     = 'landing'
+if 'liked_movies' not in st.session_state: st.session_state.liked_movies = []
 
 # ── Pages ────────────────────────────────────────────────────────
 
@@ -272,6 +273,11 @@ def home_page():
                 col_a, col_b = st.columns(2)
                 if col_a.button('👍', key=f"like_{rec['id']}"):
                     log_event(user_id, variant, rec['id'], 'like')
+                    st.session_state.liked_movies.append({
+                        'title':   rec['title'],
+                        'genres':  rec['genres'],
+                        'variant': variant
+                    })
                     st.session_state.variant = 'content' if variant == 'collaborative' else 'collaborative'
                     st.toast(f"Liked! Switching to {st.session_state.variant}")
                     st.rerun()
@@ -279,7 +285,7 @@ def home_page():
                     log_event(user_id, variant, rec['id'], 'dislike')
                     st.session_state.variant = 'content' if variant == 'collaborative' else 'collaborative'
                     st.toast(f"Disliked! Switching to {st.session_state.variant}")
-                    st.rerun()
+                    st.rerun()               
 
 def results_page():
     st.title('📊 Interleaved Test Results')
@@ -367,7 +373,6 @@ def results_page():
             st.info(f'📊 **{winner}** filtering is likely better ({win_prob:.1%} probability) — keep collecting data.')
         else:
             st.warning(f'⚠️ Too close to call — {winner} leads with only {win_prob:.1%} probability.')
-# ── Navigation ───────────────────────────────────────────────────
 with st.sidebar:
     st.title('Navigation')
     if st.button('🏠 Home'):
@@ -381,6 +386,26 @@ with st.sidebar:
             del st.session_state[key]
         st.rerun()
 
+    # Liked movies in sidebar
+    if st.session_state.liked_movies:
+        st.divider()
+        st.subheader(f'❤️ Liked Movies ({len(st.session_state.liked_movies)})')
+        
+        search = st.text_input('🔍 Search liked movies', placeholder='Type to search...')
+        
+        filtered = [
+            m for m in st.session_state.liked_movies
+            if search.lower() in m['title'].lower()
+        ] if search else st.session_state.liked_movies
+        
+        # Scrollable container limited to 5 visible
+        with st.container(height=300):
+            if not filtered:
+                st.caption('No matches found.')
+            for movie in filtered[-20:]:  # show last 20 max
+                st.markdown(f"**{movie['title']}**")
+                st.caption(f"{movie['genres']} · via {movie['variant']}")
+                st.divider()
 # ── Router ───────────────────────────────────────────────────────
 page = st.session_state.get('page', 'landing')
 if page == 'landing':
