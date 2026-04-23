@@ -83,18 +83,34 @@ def is_cold_start(user_id):
 
 # ── Explanation helpers ──────────────────────────────────────────
 def explain_svd(user_id, recommended_movie_id):
-    uid       = int(user_id)
-    top_rated = ratings[(ratings['userId'] == uid) & (ratings['rating'] >= 4)]
-    top_rated = top_rated.merge(movies, on='movieId').sort_values('rating', ascending=False)
-    if top_rated.empty:
-        return "Popular with users like you"
-    rec_movie  = movies[movies['movieId'] == recommended_movie_id].iloc[0]
-    rec_genres = set(rec_movie['genres'].split('|'))
-    for _, row in top_rated.head(10).iterrows():
-        overlap = rec_genres & set(row['genres'].split('|'))
-        if overlap:
-            return f"Because you liked {row['title']} ({', '.join(overlap)})"
-    return "Popular with users who share your taste"
+    uid = int(user_id)
+
+    # Find users who rated this movie highly
+    similar_raters = ratings[
+        (ratings['movieId'] == recommended_movie_id) &
+        (ratings['rating'] >= 4)
+    ]['userId'].tolist()
+
+    # Find overlap — users who also rated the same movies as this user highly
+    user_liked = set(ratings[(ratings['userId'] == uid) &
+                              (ratings['rating'] >= 4)]['movieId'].tolist())
+
+    best_shared = 0
+    for other_uid in similar_raters[:100]:
+        other_liked = set(ratings[(ratings['userId'] == other_uid) &
+                                   (ratings['rating'] >= 4)]['movieId'].tolist())
+        shared = len(user_liked & other_liked)
+        if shared > best_shared:
+            best_shared = shared
+
+    movie_row  = movies[movies['movieId'] == recommended_movie_id].iloc[0]
+    avg_rating = ratings[ratings['movieId'] == recommended_movie_id]['rating'].mean()
+    n_raters   = len(similar_raters)
+
+    if best_shared > 0:
+        return (f"Users with {best_shared} movies in common with you "
+                f"rated this {avg_rating:.1f}⭐ ({n_raters:,} similar users liked this)")
+    return f"Highly rated by users who share your taste ({avg_rating:.1f}⭐, {n_raters:,} ratings)"
 
 def explain_content(user_id, recommended_movie_id):
     uid   = int(user_id)
@@ -266,7 +282,7 @@ def home_page():
                     st.rerun()
 
 def results_page():
-    st.title('📊 A/B Test Results')
+    st.title('📊 Interleaved Test Results')
     con = sqlite3.connect('logs.db')
     try:
         df = pd.read_sql('SELECT * FROM events', con)
@@ -308,6 +324,49 @@ def results_page():
     })
     st.bar_chart(chart_df.set_index('Variant'))
 
+   # ── Statistical significance test ────────────────────────────
+    st.subheader('📈 Model Comparison')
+    from scipy import stats
+
+    collab  = summary['collaborative']
+    content = summary['content']
+
+    if collab['impressions'] == 0 or content['impressions'] == 0:
+        st.info('No data yet for one or both variants.')
+    else:
+        # Chi-square test
+        contingency = [
+            [collab['likes'],  collab['impressions']  - collab['likes']],
+            [content['likes'], content['impressions'] - content['likes']]
+        ]
+        chi2, p, _, _ = stats.chi2_contingency(contingency)
+        winner = 'Collaborative' if collab['like_rate'] > content['like_rate'] else 'Content'
+
+        # Bayesian win probability using Beta distribution
+        # Beta(likes+1, dislikes+impressions+1) models the like rate
+        collab_beta  = stats.beta(collab['likes'] + 1,
+                                   collab['impressions'] - collab['likes'] + 1)
+        content_beta = stats.beta(content['likes'] + 1,
+                                   content['impressions'] - content['likes'] + 1)
+
+        # Monte Carlo sample to estimate P(collaborative > content)
+        samples      = 100_000
+        collab_samp  = collab_beta.rvs(samples)
+        content_samp = content_beta.rvs(samples)
+        win_prob     = (collab_samp > content_samp).mean()
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric('Chi-square',   f"{chi2:.3f}")
+        col2.metric('p-value',      f"{p:.4f}")
+        col3.metric('Winner',       winner)
+        col4.metric('Win Probability', f"{win_prob:.1%}")
+
+        if win_prob >= 0.95:
+            st.success(f'✅ **{winner}** filtering is better with {win_prob:.1%} probability.')
+        elif win_prob >= 0.80:
+            st.info(f'📊 **{winner}** filtering is likely better ({win_prob:.1%} probability) — keep collecting data.')
+        else:
+            st.warning(f'⚠️ Too close to call — {winner} leads with only {win_prob:.1%} probability.')
 # ── Navigation ───────────────────────────────────────────────────
 with st.sidebar:
     st.title('Navigation')
