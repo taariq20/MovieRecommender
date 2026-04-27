@@ -611,10 +611,6 @@ def landing_page():
     active = []
     if NCF_LOADED: active.append('Neural CF')
     if BERT_LOADED: active.append('Sequence model')
-    if active:
-        st.caption(f"✅ {' + '.join(active)} loaded — {len(VARIANTS)}-way A/B test active.")
-    else:
-        st.caption('⚠️ No neural checkpoints found. Running SVD vs Content only.')
     st.write('How do you want to start?')
     col1, col2 = st.columns(2)
     with col1:
@@ -658,9 +654,8 @@ def home_page():
     user_type = st.session_state.user_type
 
     st.title('🎬 Movie Recommendations')
-    col1, col2, col3 = st.columns([2,2,1])
+    col1, col3 = st.columns([4, 1])
     col1.metric('User ID', user_id)
-    col2.metric('Variant', VARIANT_LABELS.get(variant, variant))
     if col3.button('Reset'):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
@@ -679,10 +674,9 @@ def home_page():
             recs = get_ncf_cold_start_recs(pref, user_id=user_id)
         elif variant == 'content':
             recs = get_content_cold_start_recs(pref, user_id=user_id)
-        else:  # collaborative
+        else:
             recs = get_cold_start_recs(pref, user_id=user_id)
     else:
-        # Warm path
         if variant == 'collaborative':
             recs = get_svd_recs(user_id)
         elif variant == 'content':
@@ -693,13 +687,13 @@ def home_page():
             recs = get_bert4rec_recs(int(user_id) if user_id.isdigit() else user_id)
 
     if not recs:
-        st.warning(f"No recommendations available for {VARIANT_LABELS.get(variant, variant)}. Try a different variant or reset.")
+        st.warning('No recommendations available. Try resetting your session.')
         return
 
     for rec in recs:
         log_event(user_id, variant, rec['id'], 'impression')
         with st.container(border=True):
-            col1, col2 = st.columns([4,1])
+            col1, col2 = st.columns([4, 1])
             with col1:
                 st.markdown(f"**{rec['title']}**")
                 st.caption(rec['genres'])
@@ -715,12 +709,10 @@ def home_page():
                     log_event(user_id, variant, rec['id'], 'like')
                     st.session_state.liked_movies.append({'title': rec['title'], 'genres': rec['genres'], 'variant': variant})
                     st.session_state.variant = _next_variant(variant)
-                    st.toast(f"Liked! Switching to {st.session_state.variant}")
                     st.rerun()
                 if col_b.button('👎', key=f"dislike_{rec['id']}"):
                     log_event(user_id, variant, rec['id'], 'dislike')
                     st.session_state.variant = _next_variant(variant)
-                    st.toast(f"Disliked! Switching to {st.session_state.variant}")
                     st.rerun()
 
 def results_page():
