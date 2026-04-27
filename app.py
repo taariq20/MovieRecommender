@@ -338,75 +338,79 @@ def get_bert4rec_recs(user_original_id, n=10):
     except Exception:
         return []
 
+def get_liked_movies(user_id):
+    """Return list of movieId that the user has liked (event='like')."""
+    con = sqlite3.connect('logs.db')
+    try:
+        df = pd.read_sql("SELECT movie_id FROM events WHERE user_id=? AND event='like'",
+                         con, params=(str(user_id),))
+    except:
+        df = pd.DataFrame(columns=['movie_id'])
+    con.close()
+    return df['movie_id'].tolist()
+
 # ── Cold‑start helpers (strictly exclude seen movies, always return n items) ──
 def get_cold_start_recs(preferred_genres, n=10, user_id=None):
-    """SVD collaborative cold start. Excludes seen movies."""
-    pref_set = set(preferred_genres)
+    """
+    SVD collaborative cold start.
+    - If user has >=2 liked movies, find similar users based on those movies,
+      then restrict candidate movies to those matching preferred genres.
+    - Otherwise, fall back to genre-filtered popularity (no collaborative filtering).
+    """
+    liked_movies = get_liked_movies(user_id) if user_id else []
     seen = set(get_seen_movies(user_id)) if user_id else set()
-    
-    # Merge ratings with movies
+    pref_set = set(preferred_genres) if preferred_genres else set()
+
+    # Helper: get popularity-based recommendations with genre filter
+    def get_popularity_recs(genre_filter=True):
+        pop = ratings.groupby('movieId').size().reset_index(name='count')
+        pop_movies = pop.merge(movies, on='movieId')
+        if genre_filter and pref_set:
+            pop_movies = pop_movies[pop_movies['genres'].apply(lambda g: any(p in g.split('|') for p in pref_set))]
+        pop_movies = pop_movies[~pop_movies['movieId'].isin(seen)]
+        pop_movies = pop_movies.sort_values('count', ascending=False).head(n)
+        results = []
+        for _, row in pop_movies.iterrows():
+            explanation = f"Popular among all users ({int(row['count'])} ratings)"
+            if genre_filter and pref_set:
+                explanation += f" – matches your genres"
+            results.append({
+                'id': int(row['movieId']),
+                'title': row['title'],
+                'genres': row['genres'],
+                'explanation': explanation
+            })
+        return results
+
+    # If not enough liked movies, use genre-filtered popularity
+    if len(liked_movies) < 2:
+        return get_popularity_recs(genre_filter=True)
+
+    # Step 1: Find users who rated ANY of the liked movies highly (>=4)
     genre_lovers = ratings.merge(movies, on='movieId')
-    # Find similar users who rated matching genres highly
     similar_users = genre_lovers[
-        genre_lovers['genres'].apply(lambda g: any(p in g.split('|') for p in pref_set)) &
+        (genre_lovers['movieId'].isin(liked_movies)) &
         (genre_lovers['rating'] >= 4)
     ]['userId'].unique()
-    
+
     if len(similar_users) == 0:
-        # Fallback: popular movies that match genres, unseen
-        pop = ratings.groupby('movieId').size().reset_index(name='count')
-        pop_movies = pop.merge(movies, on='movieId')
-        filtered = pop_movies[
-            pop_movies['genres'].apply(lambda g: any(p in g.split('|') for p in pref_set)) &
-            (~pop_movies['movieId'].isin(seen))
-        ]
-        filtered = filtered.sort_values('count', ascending=False).head(n)
-        if len(filtered) < n:
-            # If not enough, add more popular movies (any genre) unseen
-            extra_needed = n - len(filtered)
-            extra = pop_movies[~pop_movies['movieId'].isin(seen)].sort_values('count', ascending=False).head(extra_needed)
-            filtered = pd.concat([filtered, extra])
-        results = []
-        for _, row in filtered.iterrows():
-            results.append({
-                'id': int(row['movieId']),
-                'title': row['title'],
-                'genres': row['genres'],
-                'explanation': f"Popular among all users ({int(row['count'])} ratings) – matches your genres"
-            })
-        return results[:n]
-    
-    # Candidate movies: highly rated by similar users, match genres, not seen
-    candidate_movies = genre_lovers[
+        return get_popularity_recs(genre_filter=True)
+
+    # Step 2: Candidate movies = highly rated by similar users, not seen, AND match preferred genres (if any)
+    candidate_df = genre_lovers[
         genre_lovers['userId'].isin(similar_users[:50]) &
         (genre_lovers['rating'] >= 4) &
-        genre_lovers['genres'].apply(lambda g: any(p in g.split('|') for p in pref_set)) &
         (~genre_lovers['movieId'].isin(seen))
-    ]['movieId'].unique()
-    
+    ]
+    if pref_set:
+        candidate_df = candidate_df[candidate_df['genres'].apply(lambda g: any(p in g.split('|') for p in pref_set))]
+    candidate_movies = candidate_df['movieId'].unique()
+
     if len(candidate_movies) == 0:
-        # Fallback to popular+genre match (already handled above)
-        pop = ratings.groupby('movieId').size().reset_index(name='count')
-        pop_movies = pop.merge(movies, on='movieId')
-        filtered = pop_movies[
-            pop_movies['genres'].apply(lambda g: any(p in g.split('|') for p in pref_set)) &
-            (~pop_movies['movieId'].isin(seen))
-        ]
-        filtered = filtered.sort_values('count', ascending=False).head(n)
-        if len(filtered) < n:
-            extra = pop_movies[~pop_movies['movieId'].isin(seen)].sort_values('count', ascending=False).head(n - len(filtered))
-            filtered = pd.concat([filtered, extra])
-        results = []
-        for _, row in filtered.iterrows():
-            results.append({
-                'id': int(row['movieId']),
-                'title': row['title'],
-                'genres': row['genres'],
-                'explanation': f"Popular among all users ({int(row['count'])} ratings) – matches your genres"
-            })
-        return results[:n]
-    
-    # Predict using SVD
+        # No movies after genre filtering – fall back to genre-filtered popularity
+        return get_popularity_recs(genre_filter=True)
+
+    # Step 3: Use SVD to predict ratings for candidate movies (average over similar users)
     movie_scores = defaultdict(list)
     for uid in similar_users[:50]:
         for mid in candidate_movies:
@@ -414,12 +418,15 @@ def get_cold_start_recs(preferred_genres, n=10, user_id=None):
             movie_scores[mid].append(pred.est)
     avg_scores = {mid: np.mean(scores) for mid, scores in movie_scores.items()}
     top_movies = sorted(avg_scores.items(), key=lambda x: x[1], reverse=True)[:n]
-    
+
     results = []
     for mid, score in top_movies:
         row = movies[movies['movieId'] == mid].iloc[0]
-        genre_match = ', '.join(set(row['genres'].split('|')) & pref_set)
-        explanation = f"Loved by users who enjoy {genre_match} (est. rating {score:.2f}⭐)"
+        explanation = f"Users who liked similar movies rated this {score:.2f}⭐"
+        # Optionally mention matching genre if desired
+        # if pref_set:
+        #     match = ', '.join(set(row['genres'].split('|')) & pref_set)
+        #     explanation += f" (matches your {match})"
         results.append({
             'id': int(mid),
             'title': row['title'],
@@ -429,12 +436,59 @@ def get_cold_start_recs(preferred_genres, n=10, user_id=None):
     return results
 
 def get_content_cold_start_recs(preferred_genres, n=10, user_id=None):
-    """Content cold start: only movies matching genres, exclude seen. Always returns n items."""
-    pref_set = set(preferred_genres)
+    """
+    Content cold start:
+    - If user has liked movies, use item-item similarity from content model.
+    - Otherwise, fall back to genre matching.
+    """
+    liked_movies = get_liked_movies(user_id) if user_id else []
     seen = set(get_seen_movies(user_id)) if user_id else set()
+
+    if liked_movies:
+        # Use content-based similarity from the trained content model
+        movie_ids = content_data['movies']['movieId'].tolist()
+        id_to_idx = {mid: i for i, mid in enumerate(movie_ids)}
+        idx_to_id = {i: mid for i, mid in enumerate(movie_ids)}
+        # Get indices of liked movies that exist in the content model
+        liked_indices = [id_to_idx[m] for m in liked_movies if m in id_to_idx]
+        if liked_indices:
+            # Average similarity scores from liked movies
+            sim_scores = cosine_sim[liked_indices].mean(axis=0)
+            # Remove already seen movies
+            for idx, mid in idx_to_id.items():
+                if mid in seen:
+                    sim_scores[idx] = -np.inf
+            top_indices = np.argsort(-sim_scores)[:n]
+            results = []
+            for idx in top_indices:
+                mid = idx_to_id[idx]
+                row = movies[movies['movieId'] == mid].iloc[0]
+                # Find which liked movie is most similar (optional)
+                results.append({
+                    'id': int(mid), 'title': row['title'], 'genres': row['genres'],
+                    'explanation': f"Because you liked similar movies"
+                })
+            if results:
+                return results
+        # Fall through to genre-based if content similarity fails
+
+    # Genre-based fallback (original logic, but exclude seen)
+    pref_set = set(preferred_genres) if preferred_genres else set()
+    if not pref_set:
+        # If no genres either, return popular unseen
+        pop = ratings.groupby('movieId').size().reset_index(name='count')
+        pop_movies = pop.merge(movies, on='movieId')
+        pop_movies = pop_movies[~pop_movies['movieId'].isin(seen)]
+        pop_movies = pop_movies.sort_values('count', ascending=False).head(n)
+        results = []
+        for _, row in pop_movies.iterrows():
+            results.append({
+                'id': int(row['movieId']), 'title': row['title'], 'genres': row['genres'],
+                'explanation': f"Popular recommendation"
+            })
+        return results
+
     popularity = ratings.groupby('movieId').size().to_dict()
-    
-    # First, collect all movies matching genres, unseen
     matched = []
     for _, row in movies.iterrows():
         mid = row['movieId']
@@ -446,60 +500,51 @@ def get_content_cold_start_recs(preferred_genres, n=10, user_id=None):
             continue
         score = len(overlap) + 0.001 * popularity.get(mid, 0)
         matched.append((mid, score, overlap))
-    
-    # Sort by score descending
-    matched.sort(key=lambda x: x[1], reverse=True)
-    # If we have enough, return top n
-    if len(matched) >= n:
+    if not matched:
+        # pure popularity fallback
+        pop = ratings.groupby('movieId').size().reset_index(name='count')
+        pop_movies = pop.merge(movies, on='movieId')
+        pop_movies = pop_movies[~pop_movies['movieId'].isin(seen)]
+        pop_movies = pop_movies.sort_values('count', ascending=False).head(n)
         results = []
-        for mid, score, overlap in matched[:n]:
-            overlap_str = ', '.join(overlap)
+        for _, row in pop_movies.iterrows():
             results.append({
-                'id': int(mid),
-                'title': movies[movies['movieId']==mid].iloc[0]['title'],
-                'genres': movies[movies['movieId']==mid].iloc[0]['genres'],
-                'explanation': f"Because you selected {overlap_str}"
+                'id': int(row['movieId']), 'title': row['title'], 'genres': row['genres'],
+                'explanation': f"Popular recommendation (no genre match for {', '.join(preferred_genres)})"
             })
         return results
-    
-    # Not enough genre-matched unseen movies -> fallback: popular movies (any genre) unseen
+
+    matched.sort(key=lambda x: x[1], reverse=True)
     results = []
-    for mid, score, overlap in matched:
+    for mid, score, overlap in matched[:n]:
         overlap_str = ', '.join(overlap)
         results.append({
-            'id': int(mid),
-            'title': movies[movies['movieId']==mid].iloc[0]['title'],
+            'id': int(mid), 'title': movies[movies['movieId']==mid].iloc[0]['title'],
             'genres': movies[movies['movieId']==mid].iloc[0]['genres'],
             'explanation': f"Because you selected {overlap_str}"
         })
-    remaining = n - len(results)
-    # Get popular movies not seen
-    pop_movies = ratings.groupby('movieId').size().reset_index(name='count')
-    pop_movies = pop_movies.merge(movies, on='movieId')
-    pop_movies = pop_movies[~pop_movies['movieId'].isin(seen)]
-    # Exclude already included
-    included_ids = set(r['id'] for r in results)
-    pop_movies = pop_movies[~pop_movies['movieId'].isin(included_ids)]
-    pop_movies = pop_movies.sort_values('count', ascending=False).head(remaining)
-    for _, row in pop_movies.iterrows():
-        results.append({
-            'id': int(row['movieId']),
-            'title': row['title'],
-            'genres': row['genres'],
-            'explanation': f"Popular recommendation (no genre match for {', '.join(preferred_genres)})"
-        })
-    return results[:n]
+    return results
 
 def get_ncf_cold_start_recs(preferred_genres, n=10, user_id=None):
-    if not NCF_LOADED: return []
+    """
+    NCF cold start: purely genre-based cosine similarity + popularity.
+    Shows similarity percentage instead of genre name.
+    """
+    if not NCF_LOADED:
+        return []
     seen = set(get_seen_movies(user_id)) if user_id else set()
     _, user_enc, movie_enc, genre_mat, pop_arr, all_genres, _ = ncf_bundle
-    pref_set = set(preferred_genres)
+    pref_set = set(preferred_genres) if preferred_genres else set()
+
+    # If no genres selected, fall back to SVD cold start
+    if not pref_set:
+        return get_cold_start_recs(preferred_genres, n, user_id)
+
     pref_vec = np.array([1.0 if g in pref_set else 0.0 for g in all_genres], dtype=np.float32)
     pref_norm = np.linalg.norm(pref_vec)
     if pref_norm == 0:
-        return get_cold_start_recs(preferred_genres, n, user_id)  # fallback
-    
+        return get_cold_start_recs(preferred_genres, n, user_id)
+
     scores = []
     for midx in range(len(movie_enc.classes_)):
         orig_id = movie_enc.classes_[midx]
@@ -507,31 +552,92 @@ def get_ncf_cold_start_recs(preferred_genres, n=10, user_id=None):
             continue
         gv = genre_mat[midx]
         gv_norm = np.linalg.norm(gv)
-        if gv_norm == 0: continue
+        if gv_norm == 0:
+            continue
         sim = float(np.dot(pref_vec, gv) / (pref_norm * gv_norm))
-        if sim < 0.02: continue
+        if sim < 0.02:
+            continue
         final = sim + 0.15 * float(pop_arr[midx])
         scores.append((midx, sim, final))
+
     if not scores:
-        return get_cold_start_recs(preferred_genres, n, user_id)  # fallback
+        return get_cold_start_recs(preferred_genres, n, user_id)
+
     scores.sort(key=lambda x: x[2], reverse=True)
     results = []
     for midx, sim, _ in scores[:n]:
         orig_id = movie_enc.classes_[midx]
         row = movies[movies['movieId'] == orig_id]
-        if row.empty: continue
+        if row.empty:
+            continue
         row = row.iloc[0]
-        movie_genres = set(row['genres'].split('|'))
-        top_match = next(iter(movie_genres & pref_set), preferred_genres[0] if preferred_genres else 'various')
         results.append({
             'id': int(orig_id),
             'title': row['title'],
             'genres': row['genres'],
-            'explanation': f"Aligns with your taste for {top_match}"
+            'explanation': f"Genre match: {sim:.2%} + popularity boost"   # numeric similarity
         })
     return results
 
 def get_bert4rec_cold_start_recs(preferred_genres, n=10, user_id=None):
+    """
+    BERT4Rec cold start:
+    - If user has liked movies, build a sequence from those liked movies (in timestamp order) and predict next.
+    - Otherwise, fall back to content-based genre matching.
+    """
+    if not BERT_LOADED:
+        return []
+    liked_movies = get_liked_movies(user_id) if user_id else []
+    seen = set(get_seen_movies(user_id)) if user_id else set()
+    model, user_enc, movie_enc, train_seqs, mask_token, max_len, n_movies, device = bert_bundle
+
+    # If user has liked movies, try to use them as a sequence
+    if liked_movies:
+        # Map liked movies to token IDs (1-based)
+        seq_tokens = []
+        for mid in liked_movies:
+            if mid in movie_enc.classes_:
+                token = int(movie_enc.transform([mid])[0]) + 1
+                seq_tokens.append(token)
+        if seq_tokens:
+            # Build input: sequence (truncated) + [MASK]
+            seq = seq_tokens[-max_len+1:] if len(seq_tokens) > max_len-1 else seq_tokens
+            seq = seq + [mask_token]  # append mask at end
+            # Pad to max_len
+            if len(seq) < max_len:
+                seq = [0] * (max_len - len(seq)) + seq
+            inp = torch.LongTensor([seq]).to(device)
+            with torch.no_grad():
+                logits = model(inp)[0, -1, :].cpu().numpy()
+            # Candidates: all movies except those seen (including liked)
+            all_tokens = np.arange(1, n_movies+1, dtype=np.int64)
+            # Exclude already seen (liked/disliked) movies
+            seen_tokens = set()
+            for mid in seen:
+                if mid in movie_enc.classes_:
+                    seen_tokens.add(int(movie_enc.transform([mid])[0]) + 1)
+            if seen_tokens:
+                cand = all_tokens[~np.isin(all_tokens, list(seen_tokens))]
+            else:
+                cand = all_tokens
+            if len(cand) > 0:
+                scores = logits[cand]
+                top = np.argsort(scores)[::-1][:n]
+                results = []
+                for token in cand[top]:
+                    orig_id = movie_enc.classes_[token-1]
+                    row = movies[movies['movieId'] == orig_id]
+                    if row.empty: continue
+                    row = row.iloc[0]
+                    results.append({
+                        'id': int(orig_id), 'title': row['title'], 'genres': row['genres'],
+                        'bert4rec_score': round(float(logits[token]), 4),
+                        'explanation': "Predicted next based on your watch sequence"
+                    })
+                if results:
+                    return results
+
+    # Fallback to content cold start (genre-based)
     recs = get_content_cold_start_recs(preferred_genres, n, user_id)
     for r in recs:
         r['explanation'] = r['explanation'].replace("Because you selected", "Based on your interest in")
@@ -852,13 +958,7 @@ with st.sidebar:
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
-    st.divider()
-    st.success("📊 Collaborative Filtering active")
-    st.success("🎯 Content-Based active")
-    if NCF_LOADED: st.success("🧠 Neural CF active")
-    else: st.warning("🧠 Neural CF not loaded (missing checkpoint)")
-    if BERT_LOADED: st.success("🤖 Sequence model active")
-    else: st.warning("🤖 Sequence model not loaded (missing checkpoint)")
+
     if st.session_state.liked_movies:
         st.divider()
         st.subheader(f'❤️ Liked Movies ({len(st.session_state.liked_movies)})')
@@ -868,7 +968,7 @@ with st.sidebar:
             if not filtered: st.caption('No matches.')
             for movie in filtered[-20:]:
                 st.markdown(f"**{movie['title']}**")
-                st.caption(f"{movie['genres']} · via {movie['variant']}")
+                st.caption(f"{movie['genres']}")
                 st.divider()
 
 # ── Router ───────────────────────────────────────────────────────
