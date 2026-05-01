@@ -28,6 +28,47 @@ Recommends the most popular items to everyone. A simple approach where all users
 Handles new users by asking for initial preferences. Since new users have no interaction history, the system uses content-based filtering (by genre) to recommend items until enough data is collected for personalisation.
 
 ---
+## Installation & Usage
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/taariq20/PersonalizationEngine
+cd PersonalizationEngine
+```
+
+### 2. Install dependencies
+Make sure you have Python 3.10 installed. Then run:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Prepare data and models
+Place the following files in the same directory as `app.py`:
+
+- `movies.csv` (pre-processed movie metadata)
+- `ratings.csv` (pre-processed user ratings)
+
+Place the trained model artifacts in a `models/` folder:
+
+```
+models/
+├── best_svd.pkl
+├── content_recommender.joblib
+├── ncf_model_checkpoint_v4.pt
+└── bert4rec_max_checkpoint.pt   (optional)
+```
+
+> **Note:** The first run will create a `logs.db` SQLite database automatically to store user interactions (likes/dislikes).
+
+### 4. Run the Streamlit app
+```bash
+streamlit run app.py
+```
+
+The app will open in your browser at `http://localhost:8501`. You can choose to start as a new user (select favourite genres) or as an existing user (random MovieLens user ID).
+
+---
 ## Streamlit App
 **View Demo:** [Watch Me!](https://www.youtube.com/watch?v=GKddulwY9lY)
 
