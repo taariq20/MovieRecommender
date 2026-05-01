@@ -108,8 +108,8 @@ except ImportError:
 def load_models():
     best_svd = joblib.load('models/best_svd.pkl')
     content_data = joblib.load('models/content_recommender.joblib')
-    movies = pd.read_csv('movies.csv')
-    ratings = pd.read_csv('ratings.csv')
+    movies = pd.read_csv('data/movies.csv')
+    ratings = pd.read_csv('data/ratings.csv')
     cosine_sim = content_data['cosine_sim']
     cos_sim = content_data['cos_sim']
     movie_idx = content_data['movie_idx']
