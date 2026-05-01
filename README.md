@@ -55,31 +55,23 @@ Requires **Python 3.10.11**.
 pip install -r requirements.txt
 ```
 
-### 3. Get the data
-Download the [MovieLens 1M dataset](https://grouplens.org/datasets/movielens/1m/) from GroupLens. Extract the archive and place `movies.csv` and `ratings.csv` into the `data/` folder:
-
-```
-data/
-├── movies.csv
-└── ratings.csv
-```
-
-> **Licensing:** The MovieLens dataset is provided by GroupLens Research for non-commercial use only. See the [MovieLens terms](https://files.grouplens.org/datasets/movielens/ml-1m-README.txt) for details.
-
-### 5. Train the models
-Each model has its own training notebook. Run them before launching the app:
+### 3. Train the models and prepare data
+Each model has its own training notebook. Running them will automatically download the MovieLens 1M dataset, process it, and save the required CSV files and model artifacts. Run them in order:
 
 ```
 notebooks/BERT4Rec_Model.ipynb
 notebooks/Collaborativefiltering.ipynb
 notebooks/Neural_Collaborative_Filter.ipynb
 notebooks/content_based_ (7).ipynb
-
 ```
 
-Trained model artifacts will be saved to the `models/` folder:
+This will generate the following files:
 
 ```
+data/
+├── movies.csv
+└── ratings.csv
+
 models/
 ├── best_svd.pkl
 ├── content_recommender.joblib
@@ -87,7 +79,9 @@ models/
 └── bert4rec_max_checkpoint.pt   (optional)
 ```
 
-### 6. Reproduce the main results
+> **Licensing:** The MovieLens 1M dataset is provided by GroupLens Research for non-commercial use only. See the [MovieLens terms](https://files.grouplens.org/datasets/movielens/ml-1m-README.txt) for details.
+
+### 4. Reproduce the main results
 To reproduce the A/B testing results reported in the paper, run:
 
 ```
@@ -96,7 +90,7 @@ notebooks/ab_testing.ipynb
 
 This evaluates all models and outputs CTR, Precision, Recall, and NDCG@K metrics.
 
-### 7. Run the Streamlit app
+### 5. Run the Streamlit app
 ```bash
 streamlit run app.py
 ```
@@ -127,7 +121,7 @@ All models achieved comparable performance. Differences across CTR, Precision, R
 ---
 
 ## AI Tools Used
-- [Claude](https://claude.ai) (Anthropic) — used during development for code assistance and debugging.
+- [Claude](https://claude.ai) (Anthropic) — used during development for code assistance, debugging, and explaining concepts.
 
 ## Important Links
 [Report](docs/report.pdf)
